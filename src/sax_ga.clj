@@ -76,22 +76,37 @@
           :position (inc (rand-int max-position))
           :leeway (inc (rand-int (int (/ max-position 2)))))))))
 
-(defmulti emit (fn [arg-sym op] (first op)))
+;;;;;;;;;;;;;;;;;;;;;;;;; creation of individuals as clojure functions ;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defmethod emit :matches [arg-sym [_ s]]
-  `(matches ~arg-sym ~s))
-(defmethod emit :matches-at [arg-sym [_ s pos lw]]
-  `(matches-at ~arg-sym ~s ~pos ~lw))
-(defmethod emit :and [arg-sym [_ a b]]
-  `(and ~(emit arg-sym a) ~(emit arg-sym b)))
-(defmethod emit :or [arg-sym [_ a b]]
-  `(or ~(emit arg-sym a) ~(emit arg-sym b)))
-(defmethod emit :not [arg-sym [_ a b]]
-  `(not ~(emit arg-sym a)))
+;(defmulti emit (fn [arg-sym op] (first op)))
+;
+;(defmethod emit :matches [arg-sym [_ s]]
+;  `(matches ~arg-sym ~s))
+;(defmethod emit :matches-at [arg-sym [_ s pos lw]]
+;  `(matches-at ~arg-sym ~s ~pos ~lw))
+;(defmethod emit :and [arg-sym [_ a b]]
+;  `(and ~(emit arg-sym a) ~(emit arg-sym b)))
+;(defmethod emit :or [arg-sym [_ a b]]
+;  `(or ~(emit arg-sym a) ~(emit arg-sym b)))
+;(defmethod emit :not [arg-sym [_ a b]]
+;  `(not ~(emit arg-sym a)))
+;
+;(defmacro generate-random-function []
+;  (let [param (gensym)] 
+;    `(fn [~param] ~(emit param (generate)))))
 
-(defmacro generate-random-function []
-  (let [param (gensym)] 
-    `(fn [~param] ~(emit param (generate)))))
+;;;;;;;;;;;;;;;;;;;; interpreter for individuals ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defmulti interprete (fn [[op] s] op))
+(defmethod interprete :matches [[_ motif] s]
+  (matches s motif))
+(defmethod interprete :matches-at [[_ motif pos lw] s]
+  (matches-at s motif pos lw))
+(defmethod interprete :and [[_ left right] s]
+  (and (interprete left s) (interprete right s)))
+(defmethod interprete :or [[_ left right] s]
+  (or (interprete left s) (interprete right s)))
+(defmethod interprete :not [[_ expr] s]
+  (not (interprete expr s)))
 
 ;;;;;;;;;;;; mutation ;;;;;;;;;;;;;;;;;;;;
 (defn mutate-motif [motif {:keys [alphabet-size motif-min-length motif-max-length]}]
@@ -135,7 +150,7 @@
     (min (:max-position opts))
     (max 0)))
 
-(defmacro by-probability [& prob-expr-pairs]
+(defmacro by-proportion [& prob-expr-pairs]
   (let [probs (take-nth 2 prob-expr-pairs)
         exprs (take-nth 2 (rest prob-expr-pairs))
         sum (apply + probs)
@@ -151,43 +166,59 @@
 
 (defmethod mutate :matches [[_ motif :as form] opts]
   (if (<= (rand) (:mutation-probability opts)) 
-    (by-probability 
-      1 [:matches (mutate-motif motif opts)]
-      1 [:matches (increase-motif motif opts)]
-      1 [:matches (decrease-motif motif opts)])
+    (by-proportion 
+      4 [:matches (mutate-motif motif opts)]
+      4 [:matches (increase-motif motif opts)]
+      4 [:matches (decrease-motif motif opts)]
+      1 [:matches-at motif (generate (operators :position) opts) (generate (operators :leeway) opts)])
     form))
 
 (defmethod mutate :matches-at [[_ motif pos lw :as form] opts]
   (if (<= (rand) (:mutation-probability opts))
-    (by-probability 
+    (by-proportion 
       1 [:matches-at (mutate-motif motif opts) pos lw]
       1 [:matches-at (increase-motif motif opts) pos lw]
       1 [:matches-at (decrease-motif motif opts) pos lw]
-      1 [:matches-at motif (mutate-position pos opts) (mutate-leeway lw opts)])
+      1 [:matches-at motif (mutate-position pos opts) (mutate-leeway lw opts)]
+      2 [:matches motif])
     form))
 
 (defmethod mutate :and [[_ left right :as form] opts]
   (if (<= (rand) (:mutation-probability opts))
-    (by-probability 
+    (by-proportion 
       1 [:and (mutate left opts) right]
       1 [:and left (mutate right opts)]
       1 [:or left right]
       1 [:not left]
-      1 [:not right])
+      1 [:not right]
+      1 left
+      1 right)
     form))
 
 (defmethod mutate :or [[_ left right :as form] opts]
   (if (<= (rand) (:mutation-probability opts))
-    (by-probability
+    (by-proportion
       1 [:or (mutate left opts) right]
       1 [:or left (mutate right opts)]
       1 [:and left right]
       1 [:not left]
-      1 [:not right])
+      1 [:not right]
+      1 left
+      1 right)
     form))
 
+(defmethod mutate :not [[_ expr :as form] opts]
+  (if (<= (rand) (:mutation-probability opts))
+    (by-proportion
+      1 expr)
+    form))
 
 ;;;;;;;;;;;; crossing over ;;;;;;;;;;;;;;;;;;;;
+(defn depth [ind] 
+  (if (or (not (vector? ind)) (not-any? vector? ind))
+    1
+    (inc (apply max (map depth ind)))))
+
 (defn locs [individual]
   (let [zipper (zip/vector-zip individual)
         all-locs (take-while (complement zip/end?) (iterate zip/next zipper))]
@@ -198,7 +229,7 @@
 (defn replace-loc [l r]
   (zip/root (zip/replace l (zip/node r))))
 
-(defn cross-over [ind1 ind2]; (println "crossing" ind1 "and" ind2) 
+(defn cross-over [ind1 ind2] 
   (let [locs-l (locs ind1)
         locs-r (locs ind2)] 
     (if (and (not-empty locs-l)
@@ -211,30 +242,34 @@
 
 
 
-(def opts {:alphabet-size 4 :motif-max-length 5 :motif-min-length 1
+(def opts {:alphabet-size 4 
+           :motif-min-length 1
+           :motif-max-length 5 
            :max-position 10
            :max-depth 3
-           :mutation-probability 0.1})
-(def sax-str "aaaabbbbccccdddd")
-(def expected (concat (repeat 11 false) 
-                        [true]
-                        (repeat 4 false)))
+           :mutation-probability 0.1
+           :sliding-window-length 5})
+
+(def sax-str "abcdeabcdebbbbaaababcdeabcdebbbbaaab")
+(def expected [false false false false false false 
+               false false false true false false false false
+               false false false false false false 
+               false false false true false false false false])
 (defn fitness [ind]
-  (let [f (eval ind)
-        results (for [end (range (inc (count sax-str))) 
-                      :let [s (subs sax-str 0 end)]]
-                  (f s))
+  (let [f #(interprete ind %) ;(eval ind)
+        results (map (comp f (partial apply str)) (partition (:sliding-window-length opts) 1 sax-str))
         same? (map = expected results)
         tp (count (filter true? (map #(and % %2) results expected)))
         fp (count (filter true? (map #(and % (not %2)) results expected)))
         tn (count (filter false? (map #(or % %2) results expected)))
         fn (count (filter true? (map #(and (not %) %2) results expected)))
-;        div (fn [a b] (if (zero? b) 0 (/ a b)))
+        div #(if (zero? %2) 0 (/ %1 %2))
         precision (div tp (+ tp fp))
         recall (div tp (+ tp fn))
         ]
     ;(println {:tp tp :fp fp :tn tn :fn fn})
-    (* 2 (div (* precision recall) (+ precision recall)))))
+    (/ (* 2 (div (* precision recall) (+ precision recall)))
+       (depth ind))))
 
 (defn generate-population [n opts]
   (for [_ (range n)]
@@ -242,8 +277,7 @@
 
 (defn run-generation [population opts]
   (let [n (count population)
-        fitnesses (pmap #(fitness (let [param (gensym)] 
-                                   `(fn [~param] ~(emit param %)))) population)
+        fitnesses (pmap fitness population)
         sm (into (sorted-map) (map vector fitnesses population))
         best-fitness (first (last sm))
         good-third (map second (take (int (/ n 3)) (reverse (seq sm))))
