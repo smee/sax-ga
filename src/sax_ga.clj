@@ -4,10 +4,11 @@
 (defn matches [sax-str motif]
   (boolean (re-matches (re-pattern (str ".*" motif ".*")) sax-str)))
 
-(defn matches-at [sax-str motif reverse-pos leeway]
-  (let [start-pos (max 0 (- (count sax-str) reverse-pos leeway))
-        end-pos (min (count sax-str) 
-                     (+ start-pos (count motif) leeway))]
+(defn matches-at [sax-str motif pos leeway]
+  (let [motif-len (count motif)
+        input-len (count sax-str)
+        start-pos (max 0 (- pos leeway))
+        end-pos (min input-len (+ start-pos motif-len leeway))]
     (matches (subs sax-str start-pos end-pos) motif)))
 
 (def operators
@@ -165,54 +166,48 @@
 (defmethod mutate :default [v _] v)
 
 (defmethod mutate :matches [[_ motif :as form] opts]
-  (if (<= (rand) (:mutation-probability opts)) 
-    (by-proportion 
-      4 [:matches (mutate-motif motif opts)]
-      4 [:matches (increase-motif motif opts)]
-      4 [:matches (decrease-motif motif opts)]
-      1 [:matches-at motif (generate (operators :position) opts) (generate (operators :leeway) opts)])
-    form))
+  (by-proportion 
+    4 [:matches (mutate-motif motif opts)]
+    4 [:matches (increase-motif motif opts)]
+    4 [:matches (decrease-motif motif opts)]
+    1 [:matches-at motif (generate (operators :position) opts) (generate (operators :leeway) opts)]))
 
 (defmethod mutate :matches-at [[_ motif pos lw :as form] opts]
-  (if (<= (rand) (:mutation-probability opts))
-    (by-proportion 
-      1 [:matches-at (mutate-motif motif opts) pos lw]
-      1 [:matches-at (increase-motif motif opts) pos lw]
-      1 [:matches-at (decrease-motif motif opts) pos lw]
-      1 [:matches-at motif (mutate-position pos opts) (mutate-leeway lw opts)]
-      2 [:matches motif])
-    form))
+  (by-proportion 
+    1 [:matches-at (mutate-motif motif opts) pos lw]
+    1 [:matches-at (increase-motif motif opts) pos lw]
+    1 [:matches-at (decrease-motif motif opts) pos lw]
+    1 [:matches-at motif pos (mutate-leeway lw opts)]
+    1 [:matches-at motif (mutate-position pos opts) lw]
+    2 [:matches motif]))
 
 (defmethod mutate :and [[_ left right :as form] opts]
-  (if (<= (rand) (:mutation-probability opts))
-    (by-proportion 
-      1 [:and (mutate left opts) right]
-      1 [:and left (mutate right opts)]
-      1 [:or left right]
-      1 [:not left]
-      1 [:not right]
-      1 left
-      1 right)
-    form))
+  (by-proportion 
+    1 [:or left right]
+    1 [:not left]
+    1 [:not right]
+    1 left
+    1 right))
 
 (defmethod mutate :or [[_ left right :as form] opts]
-  (if (<= (rand) (:mutation-probability opts))
-    (by-proportion
-      1 [:or (mutate left opts) right]
-      1 [:or left (mutate right opts)]
-      1 [:and left right]
-      1 [:not left]
-      1 [:not right]
-      1 left
-      1 right)
-    form))
+  (by-proportion
+    1 [:and left right]
+    1 [:not left]
+    1 [:not right]
+    1 left
+    1 right))
 
 (defmethod mutate :not [[_ expr :as form] opts]
-  (if (<= (rand) (:mutation-probability opts))
-    (by-proportion
-      1 expr)
-    form))
+  (by-proportion
+    1 expr))
 
+(defn mutator [opts]
+  (fn [ind]
+    (clojure.walk/postwalk #(if (and (vector? %) 
+                                     (<= (rand) (:mutation-probability opts)))
+                              (mutate % opts)
+                              %) 
+                           ind)))
 ;;;;;;;;;;;; crossing over ;;;;;;;;;;;;;;;;;;;;
 (defn depth [ind] 
   (if (or (not (vector? ind)) (not-any? vector? ind))
@@ -241,22 +236,25 @@
       [ind1 ind2])))
 
 
-
-(def opts {:alphabet-size 4 
-           :motif-min-length 1
-           :motif-max-length 5 
-           :max-position 10
-           :max-depth 3
-           :mutation-probability 0.1
-           :sliding-window-length 5})
-
-(def sax-str "abcdeabcdebbbbaaababcdeabcdebbbbaaab")
-(def expected [false false false false false false 
-               false false false true false false false false
-               false false false false false false 
-               false false false true false false false false])
-(defn fitness [ind]
-  (let [f #(interprete ind %) ;(eval ind)
+  (def opts {:alphabet-size 5 
+             :motif-min-length 3
+             :motif-max-length 7 
+             :max-position 10
+             :max-depth 3
+             :mutation-probability 0.1
+             :sliding-window-length 10})
+  
+  (def sax-str "abcdeabcdeabbbbbaaabcdeabcaadeabcdeabcdebbbbbaaababcdeaaacde")
+  (def expected #_[false false false false false false 
+                   false false false true false false false false
+                   false false false false false false 
+                   false false false true false false false false]
+    (for [to-be (partition 4 1 (drop (:sliding-window-length opts) sax-str)) :let [to-be (apply str to-be)]]
+      (boolean (re-matches #"aaa." to-be))))
+      
+(defn fitness [opts sax-str expected] 
+  (fn [ind]
+    (let [f #(interprete ind %) ;(eval ind)
         results (map (comp f (partial apply str)) (partition (:sliding-window-length opts) 1 sax-str))
         same? (map = expected results)
         tp (count (filter true? (map #(and % %2) results expected)))
@@ -266,10 +264,10 @@
         div #(if (zero? %2) 0 (/ %1 %2))
         precision (div tp (+ tp fp))
         recall (div tp (+ tp fn))
-        ]
-    ;(println {:tp tp :fp fp :tn tn :fn fn})
-    (/ (* 2 (div (* precision recall) (+ precision recall)))
-       (depth ind))))
+        size (depth ind)
+        size-punishment-factor (condp >= size 4 1, (:max-depth opts) 0.5, 0.25)]
+    (when (:debug? opts) (println {:tp tp :fp fp :tn tn :fn fn}))
+    (* 2 (div (* precision recall) (+ precision recall)) size-punishment-factor))))
 
 (defn generate-population [n opts]
   (for [_ (range n)]
@@ -277,18 +275,28 @@
 
 (defn run-generation [population opts]
   (let [n (count population)
+        fitness (fitness opts sax-str expected)
         fitnesses (pmap fitness population)
         sm (into (sorted-map) (map vector fitnesses population))
         best-fitness (first (last sm))
         good-third (map second (take (int (/ n 3)) (reverse (seq sm))))
         best-individual (first good-third)
         children (apply concat (pmap cross-over (shuffle good-third) (shuffle good-third)))]
-    (with-meta (map #(mutate % opts) (concat good-third children)) 
+    (with-meta (concat good-third (map (mutator opts) children)) 
       {:best-fitness best-fitness
        :best-individual best-individual})))
 
 (comment  
   
+
+  
+  
+(use '[incanter core charts])
+(def results (map meta (iterate (fn [gen] (run-generation gen opts)) (generate-population 500 opts))))
+(time (view (xy-plot (range) (map :best-fitness (take 500 results)))))
+(-> (nth results 500) :best-individual clojure.pprint/pprint)
+(-> (nth results 500) :best-individual ((fitness (assoc opts :debug? true) sax-str expected)))
+
 
 (loop [idx 0]
   (let [gen (generate opts)
