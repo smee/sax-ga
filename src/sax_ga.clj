@@ -13,20 +13,15 @@
 
 (def operators
   {:and {:type :logical
-         :op :and
-         :input-types [:logical :logical]}
+         :op :and}
    :or {:type :logical
-        :op :or
-        :input-types [:logical :logical]}
+        :op :or}
    :not {:type :logical
-         :op :not
-         :input-types [:logical]}
+         :op :not}
    :matches {:type :logical
-             :op :matches
-             :input-types [:motif]}
+             :op :matches}
    :matches-at {:type :logical
-                :op :matches-at
-                :input-types [:motif :position :leeway]}
+                :op :matches-at}
    :motif {:type :string
            :op :motif}
    :position {:type :integer
@@ -37,7 +32,7 @@
 (def non-terminal [:and :or :not :matches :matches-at])
 (def terminal [:motif :position])
 
-(defn- random-motif-character [alphabet-size]
+(defn random-motif-character [alphabet-size]
   (char (+ (int \a) (rand-int alphabet-size))))
 
 (defn generate
@@ -249,7 +244,8 @@
                    false false false true false false false false
                    false false false false false false 
                    false false false true false false false false]
-    (for [to-be (partition 4 1 (drop (:sliding-window-length opts) sax-str)) :let [to-be (apply str to-be)]]
+    (for [to-be (partition 4 1 (drop (:sliding-window-length opts) sax-str)) 
+          :let [to-be (apply str to-be)]]
       (boolean (re-matches #"aaa." to-be))))
       
 (defn fitness [opts sax-str expected] 
